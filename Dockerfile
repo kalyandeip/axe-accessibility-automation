@@ -1,35 +1,38 @@
-# syntax=docker/dockerfile:1
-
-################################################################################
-# Stage 1: Build using Maven (includes wrapper generation)
-FROM eclipse-temurin:21 AS builder
+# Stage 1: Build with Maven
+FROM maven:3.8.1-openjdk-11-slim AS build
 WORKDIR /app
 
-# Generate Maven wrapper inside container (no need to include in repo)
-RUN mvn -N io.takari:maven:wrapper
+# Copy pom & source; adjust paths as needed
+COPY pom.xml .
+COPY src/ src/
 
-# Copy wrapper and pom only (to leverage dependency caching)
-COPY pom.xml .mvn/ mvnw mvnw.cmd ./
+# Download dependencies (leveraging Docker cache)
+RUN mvn dependency:go-offline -B
 
-# Pre-download dependencies for caching
-RUN --mount=type=cache,target=/root/.m2 \
-    ./mvnw dependency:go-offline -B
+# Build the jar (skip tests for faster builds)
+RUN mvn clean package -DskipTests -B
 
-# Copy source and build
-COPY src/ ./src/
-RUN --mount=type=cache,target=/root/.m2 \
-    ./mvnw clean package -DskipTests -B
-
-################################################################################
-# Stage 2: Create lean runtime image
-FROM eclipse-temurin:21-jre-alpine
+# Stage 2: Package runtime image
+FROM openjdk:11-jre-slim
 WORKDIR /app
 
-RUN addgroup -S appgroup && adduser -S -G appgroup appuser
-COPY --from=builder /app/target/*.jar app.jar
+# Add non-root user
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+
+# Copy the built jar
+COPY --from=build /app/target/*.jar app.jar
+
+# Set ownership
 RUN chown appuser:appgroup /app/app.jar
+
+# Use non-root user
 USER appuser
 
+# Expose your desired port
 EXPOSE 8080
-ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/./urandom"
+
+# JVM options (adjust as needed)
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+
+# Run your app
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
